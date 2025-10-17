@@ -18,11 +18,13 @@ urlpatterns = [
     path('warehouses/', include('api.v1.routes.warehouse_routes')),
 
     # invoices
-    path('invoices/', include('api.v1.routes.invoice_routes'))
+    path('invoices/', include('api.v1.routes.invoice_routes')),
+    
+    path('orders/', include('api.v1.routes.order_routes')),
+    
+    path('production/', include('api.v1.routes.production_routes')),
     # Future modules will be added here:
-    # path('invoices/', include('api.v1.routes.invoice_routes')),
-    # path('orders/', include('api.v1.routes.order_routes')),
-    # path('production/', include('api.v1.routes.production_routes')),
+  
     # path('vouchers/', include('api.v1.routes.voucher_routes')),
     # path('reports/', include('api.v1.routes.report_routes')),
     # path('dashboard/', include('api.v1.routes.dashboard_routes')),

@@ -26,9 +26,9 @@ INSTALLED_APPS = [
     'corsheaders',
     'django_filters',
     'layers', 
-    # Local apps
+    
     'core',
-    'layers.apps.LayersConfig',  # ← CHANGED THIS LINE
+    # 'layers.apps.LayersConfig', 
 ]
 
 MIDDLEWARE = [

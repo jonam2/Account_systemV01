@@ -6,6 +6,8 @@ from layers.models.product_models import Product, Category
 from layers.models.contact_models import Contact
 from layers.models.warehouse_models import Warehouse, Stock, StockMovement
 from layers.models.invoice_models import Invoice, InvoiceItem, InvoicePayment
+from layers.models.order_models import Order, OrderItem, OrderStatusHistory
+from layers.models.production_models import BillOfMaterials, BOMComponent, ProductionOrder, ProductionOrderItem, ProductionPhase
 
 
 @admin.register(User)
@@ -27,7 +29,6 @@ class UserAdmin(BaseUserAdmin):
         }),
     )
 
-
 @admin.register(Category)
 class CategoryAdmin(admin.ModelAdmin):
     """Category admin configuration"""
@@ -43,7 +44,6 @@ class CategoryAdmin(admin.ModelAdmin):
             'fields': ('is_active',)
         }),
     )
-
 
 @admin.register(Product)
 class ProductAdmin(admin.ModelAdmin):
@@ -75,7 +75,6 @@ class ProductAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
 
 @admin.register(Contact)
 class ContactAdmin(admin.ModelAdmin):
@@ -113,7 +112,6 @@ class ContactAdmin(admin.ModelAdmin):
         }),
     )
 
-
 @admin.register(Warehouse)
 class WarehouseAdmin(admin.ModelAdmin):
     """Warehouse admin configuration"""
@@ -143,7 +141,6 @@ class WarehouseAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
     )
-
 
 @admin.register(Stock)
 class StockAdmin(admin.ModelAdmin):
@@ -176,7 +173,6 @@ class StockAdmin(admin.ModelAdmin):
         }),
     )
 
-
 @admin.register(StockMovement)
 class StockMovementAdmin(admin.ModelAdmin):
     """Stock Movement admin configuration"""
@@ -204,8 +200,6 @@ class StockMovementAdmin(admin.ModelAdmin):
         }),
     )
 
-
-
 class InvoiceItemInline(admin.TabularInline):
     model = InvoiceItem
     extra = 1
@@ -213,12 +207,10 @@ class InvoiceItemInline(admin.TabularInline):
               'tax_percentage', 'line_total']
     readonly_fields = ['line_total']
 
-
 class InvoicePaymentInline(admin.TabularInline):
     model = InvoicePayment
     extra = 0
     fields = ['payment_date', 'amount', 'payment_method', 'reference_number']
-
 
 @admin.register(Invoice)
 class InvoiceAdmin(admin.ModelAdmin):
@@ -251,3 +243,169 @@ class InvoiceAdmin(admin.ModelAdmin):
             'fields': ('created_by', 'approved_by', 'approved_date')
         }),
     )
+
+@admin.register(Order)
+class OrderAdmin(admin.ModelAdmin):
+    list_display = ['order_number', 'order_type', 'contact', 'status', 'total_amount', 'order_date']
+    list_filter = ['order_type', 'status', 'is_converted_to_invoice', 'order_date']
+    search_fields = ['order_number', 'reference_number', 'contact__name']
+    readonly_fields = ['created_at', 'updated_at', 'subtotal', 'total_amount']
+    date_hierarchy = 'order_date'
+
+@admin.register(OrderItem)
+class OrderItemAdmin(admin.ModelAdmin):
+    list_display = ['id', 'order', 'product', 'quantity', 'unit_price', 'total_price']
+    list_filter = ['order__order_type']
+    search_fields = ['order__order_number', 'product__name', 'product__sku']
+
+@admin.register(OrderStatusHistory)
+class OrderStatusHistoryAdmin(admin.ModelAdmin):
+    list_display = ['order', 'old_status', 'new_status', 'changed_by', 'created_at']
+    list_filter = ['new_status', 'created_at']
+    search_fields = ['order__order_number']
+    readonly_fields = ['created_at']
+
+# ==================== PRODUCTION MODELS ====================
+
+class BOMComponentInline(admin.TabularInline):
+    """Inline for BOM components"""
+    model = BOMComponent
+    extra = 1
+    fields = ['component', 'quantity', 'is_variable', 'estimated_quantity', 'unit_cost', 'sequence']
+    autocomplete_fields = ['component']
+
+
+@admin.register(BillOfMaterials)
+class BillOfMaterialsAdmin(admin.ModelAdmin):
+    """Admin for Bill of Materials"""
+    list_display = [
+        'id', 'product', 'name', 'version', 'is_active',
+        'expected_quantity', 'estimated_material_cost',
+        'labor_cost', 'total_cost_per_unit', 'created_at'
+    ]
+    list_filter = ['is_active', 'created_at']
+    search_fields = ['name', 'product__name', 'product__sku']
+    autocomplete_fields = ['product']
+    inlines = [BOMComponentInline]
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('product', 'name', 'name_ar', 'version', 'is_active', 'notes')
+        }),
+        ('Quantities & Yield', {
+            'fields': ('expected_quantity', 'min_yield', 'max_yield')
+        }),
+        ('Costs', {
+            'fields': ('estimated_material_cost', 'labor_cost', 'overhead_cost')
+        }),
+    )
+    
+    readonly_fields = ['estimated_material_cost']
+
+
+@admin.register(BOMComponent)
+class BOMComponentAdmin(admin.ModelAdmin):
+    """Admin for BOM components"""
+    list_display = [
+        'id', 'bom', 'component', 'quantity', 'is_variable',
+        'unit_cost', 'total_cost', 'sequence'
+    ]
+    list_filter = ['is_variable', 'created_at']
+    search_fields = ['bom__name', 'component__name', 'component__sku']
+    autocomplete_fields = ['bom', 'component']
+
+
+class ProductionOrderItemInline(admin.TabularInline):
+    """Inline for production order items"""
+    model = ProductionOrderItem
+    extra = 0
+    fields = ['product', 'planned_quantity', 'actual_quantity', 'unit_cost', 'total_cost', 'reserved']
+    readonly_fields = ['reserved']
+    autocomplete_fields = ['product']
+
+
+class ProductionPhaseInline(admin.TabularInline):
+    """Inline for production phases"""
+    model = ProductionPhase
+    extra = 0
+    fields = ['phase_number', 'name', 'status', 'started_at', 'completed_at']
+    readonly_fields = ['started_at', 'completed_at']
+
+
+@admin.register(ProductionOrder)
+class ProductionOrderAdmin(admin.ModelAdmin):
+    """Admin for production orders"""
+    list_display = [
+        'order_number', 'order_type', 'status', 'product',
+        'planned_quantity', 'actual_quantity', 'warehouse',
+        'scheduled_date', 'total_cost', 'created_at'
+    ]
+    list_filter = ['order_type', 'status', 'scheduled_date', 'warehouse']
+    search_fields = ['order_number', 'product__name', 'product__sku']
+    autocomplete_fields = ['product', 'bom', 'warehouse', 'created_by', 'completed_by', 'parent_order']
+    inlines = [ProductionOrderItemInline, ProductionPhaseInline]
+    date_hierarchy = 'scheduled_date'
+    
+    fieldsets = (
+        ('Order Information', {
+            'fields': ('order_number', 'order_type', 'status', 'phase')
+        }),
+        ('Product & BOM', {
+            'fields': ('product', 'bom', 'warehouse')
+        }),
+        ('Quantities', {
+            'fields': ('planned_quantity', 'actual_quantity')
+        }),
+        ('Schedule', {
+            'fields': ('scheduled_date', 'started_at', 'completed_at')
+        }),
+        ('Costs', {
+            'fields': ('material_cost', 'labor_cost', 'overhead_cost')
+        }),
+        ('Users', {
+            'fields': ('created_by', 'completed_by')
+        }),
+        ('Phased Production', {
+            'fields': ('parent_order',)
+        }),
+        ('Notes', {
+            'fields': ('notes',)
+        }),
+    )
+    
+    readonly_fields = ['started_at', 'completed_at']
+    
+    def get_readonly_fields(self, request, obj=None):
+        """Make certain fields readonly after creation"""
+        if obj and obj.status in ['completed', 'cancelled']:
+            return self.readonly_fields + [
+                'order_type', 'product', 'bom', 'warehouse',
+                'planned_quantity', 'material_cost', 'labor_cost', 'overhead_cost'
+            ]
+        return self.readonly_fields
+
+
+@admin.register(ProductionOrderItem)
+class ProductionOrderItemAdmin(admin.ModelAdmin):
+    """Admin for production order items"""
+    list_display = [
+        'id', 'production_order', 'product', 'planned_quantity',
+        'actual_quantity', 'unit_cost', 'total_cost', 'reserved'
+    ]
+    list_filter = ['reserved', 'created_at']
+    search_fields = ['production_order__order_number', 'product__name', 'product__sku']
+    autocomplete_fields = ['production_order', 'product']
+    readonly_fields = ['reserved', 'reservation_id']
+
+
+@admin.register(ProductionPhase)
+class ProductionPhaseAdmin(admin.ModelAdmin):
+    """Admin for production phases"""
+    list_display = [
+        'id', 'production_order', 'phase_number', 'name',
+        'status', 'started_at', 'completed_at'
+    ]
+    list_filter = ['status', 'created_at']
+    search_fields = ['production_order__order_number', 'name']
+    autocomplete_fields = ['production_order']
+    readonly_fields = ['started_at', 'completed_at']

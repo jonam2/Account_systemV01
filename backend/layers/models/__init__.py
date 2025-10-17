@@ -1,47 +1,46 @@
-"""Import all models to make them discoverable by Django"""
-from layers.models.user_models import User
-from layers.models.product_models import Product, Category
-from layers.models.contact_models import Contact
-from layers.models.warehouse_models import Warehouse, Stock, StockMovement
-from .invoice_models import Invoice, InvoiceItem, InvoicePayment
-
-__all__ = [
-    'User',
-    'Product', 'Category',
-    'Contact',
-    'Warehouse', 'Stock', 'StockMovement',
-    'Invoice', 'InvoiceItem', 'InvoicePayment',
-]
-
 """
-Models Package - Centralized model imports
-All models are registered here for Django to discover them
+Models Package - Corrected Version
+Fixed Issues:
+- Removed wildcard imports to avoid circular imports
+- Explicit imports for better control
+- Clear __all__ definition
+- Proper ordering to avoid dependency issues
 """
 
-# Import all models to register them with Django
+# Import models explicitly to avoid circular imports
 # Order matters - import models without dependencies first
 
-# User models
-from .user_models import User
+# User models (no dependencies)
+from layers.models.user_models import User
 
-# Product models
-from .product_models import Product, Category
+# Product models (no dependencies)
+from layers.models.product_models import Product, Category
 
-# Contact models
-from .contact_models import Contact
+# Contact models (depends on User)
+from layers.models.contact_models import Contact
 
-# Warehouse models
-from .warehouse_models import Warehouse, Stock
+# Warehouse models (depends on Product, User)
+from layers.models.warehouse_models import Warehouse, Stock, StockMovement
 
-# Invoice models
-from .invoice_models import Invoice, InvoiceItem, InvoicePayment
+# Invoice models (depends on User, Product, Contact, Warehouse)
+from layers.models.invoice_models import Invoice, InvoiceItem, InvoicePayment
 
+# Order models (depends on User, Product, Contact, Warehouse, Invoice)
+from layers.models.order_models import Order, OrderItem, OrderStatusHistory
 
-# Export all models
+# Production models (depends on Product, Warehouse, User)
+from layers.models.production_models import (
+    BillOfMaterials,
+    BOMComponent,
+    ProductionOrder,
+    ProductionOrderItem,
+    ProductionPhase
+)
+
+# Define what gets exported when someone does "from layers.models import *"
 __all__ = [
     # User models
     'User',
-    'Role',
     
     # Product models
     'Product',
@@ -53,9 +52,22 @@ __all__ = [
     # Warehouse models
     'Warehouse',
     'Stock',
+    'StockMovement',
     
     # Invoice models
     'Invoice',
     'InvoiceItem',
     'InvoicePayment',
+    
+    # Order models
+    'Order',
+    'OrderItem',
+    'OrderStatusHistory',
+    
+    # Production models
+    'BillOfMaterials',
+    'BOMComponent',
+    'ProductionOrder',
+    'ProductionOrderItem',
+    'ProductionPhase',
 ]
