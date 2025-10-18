@@ -1,213 +1,280 @@
-"""Order service for business logic"""
-from datetime import date
+"""
+Order Service - Complete Business Logic Layer
+Handles sales and purchase orders with invoice conversion
+"""
+from django.db import transaction
+from django.utils import timezone
 from decimal import Decimal
+import logging
+
 from layers.repositories.order_repository import OrderRepository, OrderItemRepository
 from layers.repositories.contact_repository import ContactRepository
-from layers.services.contact_service import ContactService
-from core.exceptions import ValidationError
+from layers.repositories.product_repository import ProductRepository
+from layers.repositories.warehouse_repository import WarehouseRepository
+from layers.models.order_models import Order, OrderItem, OrderStatusHistory
+from core.exceptions import (
+    ValidationError,
+    NotFoundError,
+    BusinessLogicError
+)
+
+logger = logging.getLogger(__name__)
 
 
 class OrderService:
-    """Service layer for Order business logic"""
-
-    @staticmethod
-    def generate_order_number(order_type):
-        """Generate unique order number"""
-        from layers.models.order_models import Order
+    """Service for order operations"""
+    
+    def __init__(self):
+        self.order_repo = OrderRepository()
+        self.contact_repo = ContactRepository()
+        self.product_repo = ProductRepository()
+        self.warehouse_repo = WarehouseRepository()
+    
+    @transaction.atomic
+    def create_order(self, order_data, items_data, user):
+        """
+        Create a new order
         
-        today = date.today()
-        prefix_map = {
-            'sales': f"SO{today.strftime('%Y%m%d')}",
-            'purchase': f"PO{today.strftime('%Y%m%d')}",
-        }
+        Args:
+            order_data (dict): Order data
+            items_data (list): List of order items
+            user: User creating the order
+            
+        Returns:
+            Order: Created order
+        """
+        try:
+            # Validate order type
+            order_type = order_data.get('order_type', '').lower()
+            if order_type not in ['sales', 'purchase']:
+                raise ValidationError(f"Invalid order type: {order_type}")
+            
+            # Validate items
+            if not items_data or len(items_data) == 0:
+                raise ValidationError("Order must have at least one item")
+            
+            # Validate contact
+            contact_id = order_data.get('contact_id') or order_data.get('contact')
+            if not contact_id:
+                raise ValidationError("Contact is required")
+            
+            contact = self.contact_repo.get_by_id(contact_id)
+            if not contact:
+                raise NotFoundError(f"Contact {contact_id} not found")
+            
+            # Validate contact type
+            if order_type == 'sales' and not contact.is_customer:
+                raise ValidationError(f"{contact.name} is not a customer")
+            elif order_type == 'purchase' and not contact.is_supplier:
+                raise ValidationError(f"{contact.name} is not a supplier")
+            
+            # Generate order number
+            prefix = 'SO' if order_type == 'sales' else 'PO'
+            year = timezone.now().year
+            last_order = Order.objects.filter(
+                order_number__startswith=f'{prefix}-{year}'
+            ).order_by('-order_number').first()
+            
+            if last_order:
+                last_num = int(last_order.order_number.split('-')[-1])
+                next_num = last_num + 1
+            else:
+                next_num = 1
+            
+            order_data['order_number'] = f'{prefix}-{year}-{next_num:05d}'
+            order_data['contact_id'] = contact_id
+            
+            # Create order
+            order = self.order_repo.create_order(order_data, items_data, user)
+            
+            logger.info(f"Order {order.order_number} created by {user.username}")
+            return order
+            
+        except (ValidationError, NotFoundError) as e:
+            logger.warning(f"Order creation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error creating order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to create order: {str(e)}")
+    
+    @transaction.atomic
+    def update_order(self, order_id, data):
+        """Update an order"""
+        try:
+            return self.order_repo.update_order(order_id, data)
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Order update failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to update order: {str(e)}")
+    
+    @transaction.atomic
+    def delete_order(self, order_id):
+        """Delete an order"""
+        try:
+            return self.order_repo.delete_order(order_id)
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Order deletion failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error deleting order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to delete order: {str(e)}")
+    
+    @transaction.atomic
+    def update_status(self, order_id, new_status, notes=None, user=None):
+        """Update order status"""
+        try:
+            return self.order_repo.update_status(order_id, new_status, notes, user)
+        except NotFoundError as e:
+            logger.warning(f"Status update failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating status: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to update status: {str(e)}")
+    
+    @transaction.atomic
+    def confirm_order(self, order_id, user):
+        """Confirm an order"""
+        try:
+            order = self.order_repo.get_by_id(order_id)
+            
+            if order.status != 'draft':
+                raise ValidationError(f"Cannot confirm order with status {order.status}")
+            
+            return self.order_repo.update_status(
+                order_id, 'confirmed', 
+                'Order confirmed', user
+            )
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Order confirmation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error confirming order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to confirm order: {str(e)}")
+    
+    @transaction.atomic
+    def cancel_order(self, order_id, reason, user):
+        """Cancel an order"""
+        try:
+            order = self.order_repo.get_by_id(order_id)
+            
+            if order.is_converted_to_invoice:
+                raise ValidationError("Cannot cancel order that has been converted to invoice")
+            
+            return self.order_repo.update_status(
+                order_id, 'cancelled', 
+                reason, user
+            )
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Order cancellation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error cancelling order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to cancel order: {str(e)}")
+    
+    @transaction.atomic
+    def convert_to_invoice(self, order_id, user):
+        """
+        Convert order to invoice
         
-        prefix = prefix_map.get(order_type, f"ORD{today.strftime('%Y%m%d')}")
-        
-        last_order = Order.objects.filter(
-            order_number__startswith=prefix
-        ).order_by('-order_number').first()
-        
-        if last_order:
-            try:
-                last_number = int(last_order.order_number.replace(prefix, ''))
-                next_number = last_number + 1
-            except ValueError:
-                next_number = 1
-        else:
-            next_number = 1
-        
-        return f"{prefix}{next_number:04d}"
-
+        Args:
+            order_id (int): Order ID
+            user: User converting the order
+            
+        Returns:
+            Invoice: Created invoice
+        """
+        try:
+            from layers.models import Invoice, InvoiceItem
+            
+            order = self.order_repo.get_by_id(order_id)
+            
+            # Validate conversion
+            if not order.can_be_converted:
+                raise ValidationError(
+                    "Order cannot be converted. Check status and conversion flag."
+                )
+            
+            # Create invoice
+            invoice_type = 'SALES' if order.is_sales_order else 'PURCHASE'
+            
+            invoice_data = {
+                'invoice_type': invoice_type,
+                'contact_id': order.contact_id,
+                'warehouse_id': order.warehouse_id,
+                'invoice_date': timezone.now().date(),
+                'due_date': timezone.now().date() + timezone.timedelta(days=30),
+                'payment_terms': 'NET_30',
+                'reference_number': order.order_number,
+                'created_by_id': user.id,
+            }
+            
+            # Generate invoice number
+            from layers.repositories.invoice_repository import InvoiceRepository
+            invoice_repo = InvoiceRepository()
+            invoice_data['invoice_number'] = invoice_repo.generate_invoice_number(
+                invoice_type, invoice_data['invoice_date']
+            )
+            
+            invoice = Invoice.objects.create(**invoice_data)
+            
+            # Create invoice items from order items
+            for order_item in order.items.all():
+                InvoiceItem.objects.create(
+                    invoice=invoice,
+                    product=order_item.product,
+                    description=order_item.product_name,
+                    quantity=order_item.quantity,
+                    unit_price=order_item.unit_price,
+                    discount_percentage=order_item.discount_percentage,
+                    tax_percentage=order_item.tax_percentage,
+                )
+            
+            # Calculate invoice totals
+            invoice.calculate_totals()
+            invoice.save()
+            
+            # Update order
+            order.is_converted_to_invoice = True
+            order.invoice = invoice
+            order.save()
+            
+            logger.info(
+                f"Order {order.order_number} converted to invoice {invoice.invoice_number}"
+            )
+            
+            return invoice
+            
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Order conversion failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error converting order: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to convert order: {str(e)}")
+    
+    # Query methods
+    
     @staticmethod
     def get_all_orders(order_type=None, status=None, contact_id=None, search=None):
         """Get all orders with filters"""
         return OrderRepository.get_all_orders(order_type, status, contact_id, search)
-
+    
     @staticmethod
     def get_sales_orders(status=None, search=None):
-        """Get all sales orders"""
+        """Get sales orders"""
         return OrderRepository.get_sales_orders(status, search)
-
+    
     @staticmethod
     def get_purchase_orders(status=None, search=None):
-        """Get all purchase orders"""
+        """Get purchase orders"""
         return OrderRepository.get_purchase_orders(status, search)
-
+    
     @staticmethod
     def get_order_by_id(order_id):
         """Get order by ID"""
         return OrderRepository.get_by_id(order_id)
-
-    @staticmethod
-    def create_order(data, items_data, user=None):
-        """Create a new order with validation"""
-        # Generate order number if not provided
-        if 'order_number' not in data or not data['order_number']:
-            data['order_number'] = OrderService.generate_order_number(data['order_type'])
-        
-        # Validate contact exists and type matches
-        contact = ContactRepository.get_by_id(data['contact_id'])
-        
-        if data['order_type'] == 'sales':
-            if contact.contact_type not in ['customer', 'both']:
-                raise ValidationError("Contact must be a customer for sales orders")
-        elif data['order_type'] == 'purchase':
-            if contact.contact_type not in ['supplier', 'both']:
-                raise ValidationError("Contact must be a supplier for purchase orders")
-        
-        # Validate items
-        if not items_data or len(items_data) == 0:
-            raise ValidationError("Order must have at least one item")
-        
-        # Check credit limit for sales orders
-        if data['order_type'] == 'sales' and data.get('status') not in ['draft', 'cancelled']:
-            # This will be enforced when converting to invoice
-            pass
-        
-        # Create order
-        order = OrderRepository.create_order(data, items_data, created_by=user)
-        
-        return order
-
-    @staticmethod
-    def update_order(order_id, data):
-        """Update order with validation"""
-        return OrderRepository.update_order(order_id, data)
-
-    @staticmethod
-    def delete_order(order_id):
-        """Delete order"""
-        return OrderRepository.delete_order(order_id)
-
-    @staticmethod
-    def update_status(order_id, new_status, notes=None, user=None):
-        """Update order status with validation"""
-        order = OrderRepository.get_by_id(order_id)
-        
-        # Validate status transition
-        valid_transitions = {
-            'draft': ['pending', 'cancelled'],
-            'pending': ['confirmed', 'cancelled'],
-            'confirmed': ['processing', 'cancelled'],
-            'processing': ['completed', 'cancelled'],
-            'completed': [],
-            'cancelled': [],
-        }
-        
-        current_status = order.status
-        
-        if new_status not in valid_transitions.get(current_status, []):
-            raise ValidationError(
-                f"Cannot change status from {current_status} to {new_status}"
-            )
-        
-        return OrderRepository.update_status(order_id, new_status, notes, user)
-
-    @staticmethod
-    def confirm_order(order_id, user=None):
-        """Confirm an order"""
-        return OrderService.update_status(order_id, 'confirmed', 'Order confirmed', user)
-
-    @staticmethod
-    def cancel_order(order_id, reason=None, user=None):
-        """Cancel an order"""
-        return OrderService.update_status(order_id, 'cancelled', reason, user)
-
-    @staticmethod
-    def complete_order(order_id, user=None):
-        """Mark order as completed"""
-        return OrderService.update_status(order_id, 'completed', 'Order completed', user)
-
-    @staticmethod
-    def convert_to_invoice(order_id, user=None):
-        """Convert order to invoice"""
-        from layers.services.invoice_service import InvoiceService
-        
-        order = OrderRepository.get_by_id(order_id)
-        
-        # Validate order can be converted
-        if not order.can_be_converted:
-            raise ValidationError(
-                "Order cannot be converted. Check order status and conversion state."
-            )
-        
-        # Check credit limit for sales orders
-        if order.is_sales_order:
-            try:
-                ContactService.check_credit_limit(
-                    order.contact_id,
-                    order.total_amount
-                )
-            except ValidationError as e:
-                raise ValidationError(f"Cannot convert order: {str(e)}")
-        
-        # Prepare invoice data
-        invoice_data = {
-            'invoice_type': 'sales' if order.is_sales_order else 'purchase',
-            'contact_id': order.contact_id,
-            'warehouse_id': order.warehouse_id,
-            'invoice_date': date.today(),
-            'due_date': date.today(),  # Can be calculated based on payment terms
-            'currency': order.currency,
-            'exchange_rate': order.exchange_rate,
-            'discount_percentage': order.discount_percentage,
-            'discount_amount': order.discount_amount,
-            'tax_percentage': order.tax_percentage,
-            'tax_amount': order.tax_amount,
-            'shipping_cost': order.shipping_cost,
-            'notes': f"Converted from Order: {order.order_number}\n{order.notes or ''}",
-            'terms_and_conditions': order.terms_and_conditions,
-            'reference_number': order.order_number,
-        }
-        
-        # Prepare invoice items
-        items_data = []
-        for order_item in order.items.all():
-            items_data.append({
-                'product_id': order_item.product_id,
-                'quantity': order_item.quantity,
-                'unit_price': order_item.unit_price,
-                'discount_percentage': order_item.discount_percentage,
-                'discount_amount': order_item.discount_amount,
-                'tax_percentage': order_item.tax_percentage,
-                'tax_amount': order_item.tax_amount,
-                'notes': order_item.notes,
-            })
-        
-        # Create invoice
-        invoice = InvoiceService.create_invoice(invoice_data, items_data, user=user)
-        
-        # Link invoice to order
-        order.invoice = invoice
-        order.is_converted_to_invoice = True
-        order.save()
-        
-        # Update order status to completed if not already
-        if order.status != 'completed':
-            OrderService.update_status(order_id, 'completed', 'Converted to invoice', user)
-        
-        return invoice
-
+    
     @staticmethod
     def get_statistics(order_type=None):
         """Get order statistics"""
@@ -215,38 +282,44 @@ class OrderService:
 
 
 class OrderItemService:
-    """Service layer for OrderItem business logic"""
-
+    """Service for order item operations"""
+    
     @staticmethod
-    def get_order_items(order_id):
-        """Get all items for an order"""
-        return OrderItemRepository.get_by_order(order_id)
-
-    @staticmethod
+    @transaction.atomic
     def add_item(order_id, item_data):
         """Add item to order"""
-        order = OrderRepository.get_by_id(order_id)
-        
-        if order.is_converted_to_invoice:
-            raise ValidationError("Cannot add items to converted order")
-        
-        if order.status in ['completed', 'cancelled']:
-            raise ValidationError(f"Cannot add items to {order.status} order")
-        
-        item_data['order_id'] = order_id
-        return OrderItemRepository.create_item(item_data)
-
+        try:
+            item_data['order_id'] = order_id
+            return OrderItemRepository.create_item(item_data)
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Add item failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error adding item: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to add item: {str(e)}")
+    
     @staticmethod
+    @transaction.atomic
     def update_item(item_id, item_data):
         """Update order item"""
-        return OrderItemRepository.update_item(item_id, item_data)
-
+        try:
+            return OrderItemRepository.update_item(item_id, item_data)
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Update item failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating item: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to update item: {str(e)}")
+    
     @staticmethod
+    @transaction.atomic
     def remove_item(item_id):
-        """Remove item from order"""
-        return OrderItemRepository.delete_item(item_id)
-
-    @staticmethod
-    def update_fulfillment(item_id, quantity_fulfilled):
-        """Update item fulfillment"""
-        return OrderItemRepository.update_fulfillment(item_id, quantity_fulfilled)
+        """Remove order item"""
+        try:
+            return OrderItemRepository.delete_item(item_id)
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Remove item failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error removing item: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to remove item: {str(e)}")

@@ -1,196 +1,217 @@
-"""Product service with business logic"""
-import re
-from typing import List, Optional, Dict
-from decimal import Decimal
+"""
+Product Service - Complete Business Logic Layer
+Handles product and category management
+"""
+from django.db import transaction
+import logging
+
 from layers.repositories.product_repository import ProductRepository, CategoryRepository
-from layers.models.product_models import Product, Category
 from core.exceptions import ValidationError, NotFoundError, DuplicateError
 
-class CategoryService:
-    """Handles all category-related business logic"""
-    
-    def __init__(self):
-        self.category_repo = CategoryRepository()
-    
-    def get_all_categories(self) -> List[Category]:
-        """Get all active categories"""
-        return self.category_repo.get_active_categories()
-    
-    def get_category_by_id(self, category_id: int) -> Category:
-        """Get category by ID"""
-        category = self.category_repo.get_by_id(category_id)
-        if not category:
-            raise NotFoundError(f"Category with ID {category_id} not found")
-        return category
-    
-    def create_category(self, data: Dict) -> Category:
-        """Create new category with validations"""
-        # Validation: Name is required
-        if not data.get('name'):
-            raise ValidationError("Category name is required")
-        
-        # Validation: Check if name exists
-        if self.category_repo.get_by_name(data['name']):
-            raise DuplicateError(f"Category '{data['name']}' already exists")
-        
-        # Validation: Check parent exists (if provided)
-        if data.get('parent'):
-            parent = self.category_repo.get_by_id(data['parent'])
-            if not parent:
-                raise ValidationError("Parent category not found")
-        
-        return self.category_repo.create(**data)
-    
-    def update_category(self, category_id: int, data: Dict) -> Category:
-        """Update category"""
-        category = self.get_category_by_id(category_id)
-        
-        # Validation: Check name uniqueness (if changing)
-        if data.get('name') and data['name'] != category.name:
-            if self.category_repo.get_by_name(data['name']):
-                raise DuplicateError(f"Category '{data['name']}' already exists")
-        
-        return self.category_repo.update(category_id, **data)
-    
-    def delete_category(self, category_id: int) -> bool:
-        """Delete category"""
-        category = self.get_category_by_id(category_id)
-        
-        # Business Rule: Cannot delete category with products
-        if category.products.exists():
-            raise ValidationError("Cannot delete category with existing products")
-        
-        return self.category_repo.delete(category_id)
-    
-    def get_root_categories(self) -> List[Category]:
-        """Get root categories"""
-        return self.category_repo.get_root_categories()
-    
-    def get_subcategories(self, category_id: int) -> List[Category]:
-        """Get subcategories"""
-        return self.category_repo.get_subcategories(category_id)
+logger = logging.getLogger(__name__)
 
 
 class ProductService:
-    """Handles all product-related business logic"""
+    """Service for product operations"""
     
     def __init__(self):
         self.product_repo = ProductRepository()
-        self.category_repo = CategoryRepository()
     
-    def get_all_products(self, filters: Optional[Dict] = None) -> List[Product]:
-        """Get all products with optional filters"""
-        if not filters:
-            return self.product_repo.get_all()
-        
-        products = self.product_repo.get_all()
-        
-        # Apply filters
-        if filters.get('category_id'):
-            products = products.filter(category_id=filters['category_id'])
-        
-        if filters.get('is_active') is not None:
-            products = products.filter(is_active=filters['is_active'])
-        
-        if filters.get('search'):
-            search = filters['search']
-            products = products.filter(
-                Q(name__icontains=search) |
-                Q(sku__icontains=search) |
-                Q(barcode__icontains=search)
-            )
-        
-        return products
+    @transaction.atomic
+    def create_product(self, data):
+        """Create a new product"""
+        try:
+            # Check for duplicate code
+            if self.product_repo.find_by_code(data.get('code')):
+                raise DuplicateError(f"Product with code {data['code']} already exists")
+            
+            # Check for duplicate barcode if provided
+            if data.get('barcode') and self.product_repo.find_by_barcode(data['barcode']):
+                raise DuplicateError(f"Product with barcode {data['barcode']} already exists")
+            
+            # Generate code if not provided
+            if not data.get('code'):
+                data['code'] = self.product_repo.generate_next_code()
+            
+            product = self.product_repo.create(data)
+            logger.info(f"Product created: {product.code} - {product.name}")
+            return product
+            
+        except DuplicateError as e:
+            logger.warning(f"Product creation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error creating product: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to create product: {str(e)}")
     
-    def get_product_by_id(self, product_id: int) -> Product:
+    @transaction.atomic
+    def update_product(self, product_id, data):
+        """Update product"""
+        try:
+            product = self.product_repo.get_by_id(product_id)
+            if not product:
+                raise NotFoundError(f"Product {product_id} not found")
+            
+            # Check for duplicate code if changing
+            if 'code' in data and data['code'] != product.code:
+                if self.product_repo.find_by_code(data['code']):
+                    raise DuplicateError(f"Product with code {data['code']} already exists")
+            
+            # Check for duplicate barcode if changing
+            if 'barcode' in data and data['barcode'] != product.barcode:
+                if data['barcode'] and self.product_repo.find_by_barcode(data['barcode']):
+                    raise DuplicateError(f"Product with barcode {data['barcode']} already exists")
+            
+            updated = self.product_repo.update(product_id, data)
+            logger.info(f"Product updated: {updated.code}")
+            return updated
+            
+        except (NotFoundError, DuplicateError) as e:
+            logger.warning(f"Product update failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating product: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to update product: {str(e)}")
+    
+    @transaction.atomic
+    def delete_product(self, product_id):
+        """Delete product"""
+        try:
+            product = self.product_repo.get_by_id(product_id)
+            if not product:
+                raise NotFoundError(f"Product {product_id} not found")
+            
+            # Check if product has stock
+            from layers.models import Stock
+            if Stock.objects.filter(product_id=product_id, quantity__gt=0).exists():
+                raise ValidationError("Cannot delete product with stock")
+            
+            # Check if product is used in transactions
+            from layers.models import InvoiceItem, OrderItem
+            if InvoiceItem.objects.filter(product_id=product_id).exists():
+                raise ValidationError("Cannot delete product used in invoices")
+            if OrderItem.objects.filter(product_id=product_id).exists():
+                raise ValidationError("Cannot delete product used in orders")
+            
+            self.product_repo.delete(product_id)
+            logger.info(f"Product deleted: {product.code}")
+            return True
+            
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Product deletion failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error deleting product: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to delete product: {str(e)}")
+    
+    def get_all_products(self, filters=None):
+        """Get all products with filters"""
+        try:
+            filters = filters or {}
+            return self.product_repo.filter_products(filters)
+        except Exception as e:
+            logger.error(f"Error listing products: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to list products: {str(e)}")
+    
+    def get_product_by_id(self, product_id):
         """Get product by ID"""
         product = self.product_repo.get_by_id(product_id)
-        if not product or product.is_deleted:
-            raise NotFoundError(f"Product with ID {product_id} not found")
+        if not product:
+            raise NotFoundError(f"Product {product_id} not found")
         return product
     
-    def create_product(self, data: Dict) -> Product:
-        """Create new product with validations"""
-        # Validation 1: Required fields
-        required_fields = ['name', 'sku', 'category', 'selling_price']
-        for field in required_fields:
-            if not data.get(field):
-                raise ValidationError(f"{field} is required")
-        
-        # Validation 2: SKU uniqueness
-        if self.product_repo.get_by_sku(data['sku']):
-            raise DuplicateError(f"Product with SKU '{data['sku']}' already exists")
-        
-        # Validation 3: Barcode uniqueness (if provided)
-        if data.get('barcode'):
-            if self.product_repo.get_by_barcode(data['barcode']):
-                raise DuplicateError(f"Product with barcode '{data['barcode']}' already exists")
-        
-        # Validation 4: Category exists
-        category = self.category_repo.get_by_id(data['category'])
-        if not category:
-            raise ValidationError("Category not found")
-        
-        # Validation 5: Prices must be positive
-        if Decimal(str(data.get('selling_price', 0))) < 0:
-            raise ValidationError("Selling price must be positive")
-        
-        if Decimal(str(data.get('cost_price', 0))) < 0:
-            raise ValidationError("Cost price must be positive")
-        
-        # Business Rule: Selling price should be >= cost price
-        selling_price = Decimal(str(data.get('selling_price', 0)))
-        cost_price = Decimal(str(data.get('cost_price', 0)))
-        if selling_price > 0 and cost_price > 0 and selling_price < cost_price:
-            # Warning: This is allowed but we can add a flag
-            pass
-        
-        return self.product_repo.create(**data)
-    
-    def update_product(self, product_id: int, data: Dict) -> Product:
-        """Update product with validations"""
-        product = self.get_product_by_id(product_id)
-        
-        # Validation: SKU uniqueness (if changing)
-        if data.get('sku') and data['sku'] != product.sku:
-            if self.product_repo.get_by_sku(data['sku']):
-                raise DuplicateError(f"Product with SKU '{data['sku']}' already exists")
-        
-        # Validation: Barcode uniqueness (if changing)
-        if data.get('barcode') and data['barcode'] != product.barcode:
-            if self.product_repo.get_by_barcode(data['barcode']):
-                raise DuplicateError(f"Product with barcode '{data['barcode']}' already exists")
-        
-        # Validation: Category exists (if changing)
-        if data.get('category'):
-            category = self.category_repo.get_by_id(data['category'])
-            if not category:
-                raise ValidationError("Category not found")
-        
-        return self.product_repo.update(product_id, **data)
-    
-    def delete_product(self, product_id: int) -> bool:
-        """Soft delete product"""
-        product = self.get_product_by_id(product_id)
-        
-        # Soft delete
-        product.is_deleted = True
-        product.save()
-        return True
-    
-    def get_product_statistics(self) -> Dict:
+    def get_product_statistics(self):
         """Get product statistics"""
-        return self.product_repo.get_products_stats()
+        return self.product_repo.get_statistics()
+
+
+class CategoryService:
+    """Service for category operations"""
     
-    def search_products(self, query: str) -> List[Product]:
-        """Search products"""
-        return self.product_repo.search(query)
+    def __init__(self):
+        self.category_repo = CategoryRepository()
     
-    def get_products_by_category(self, category_id: int) -> List[Product]:
-        """Get products by category"""
-        # Validate category exists
+    @transaction.atomic
+    def create_category(self, data):
+        """Create a new category"""
+        try:
+            # Check for duplicate code
+            if self.category_repo.find_by_code(data.get('code')):
+                raise DuplicateError(f"Category with code {data['code']} already exists")
+            
+            # Generate code if not provided
+            if not data.get('code'):
+                data['code'] = self.category_repo.generate_next_code()
+            
+            category = self.category_repo.create(data)
+            logger.info(f"Category created: {category.code} - {category.name}")
+            return category
+            
+        except DuplicateError as e:
+            logger.warning(f"Category creation failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error creating category: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to create category: {str(e)}")
+    
+    @transaction.atomic
+    def update_category(self, category_id, data):
+        """Update category"""
+        try:
+            category = self.category_repo.get_by_id(category_id)
+            if not category:
+                raise NotFoundError(f"Category {category_id} not found")
+            
+            # Check for duplicate code if changing
+            if 'code' in data and data['code'] != category.code:
+                if self.category_repo.find_by_code(data['code']):
+                    raise DuplicateError(f"Category with code {data['code']} already exists")
+            
+            updated = self.category_repo.update(category_id, data)
+            logger.info(f"Category updated: {updated.code}")
+            return updated
+            
+        except (NotFoundError, DuplicateError) as e:
+            logger.warning(f"Category update failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error updating category: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to update category: {str(e)}")
+    
+    @transaction.atomic
+    def delete_category(self, category_id):
+        """Delete category"""
+        try:
+            category = self.category_repo.get_by_id(category_id)
+            if not category:
+                raise NotFoundError(f"Category {category_id} not found")
+            
+            # Check if category has products
+            if category.products.exists():
+                raise ValidationError("Cannot delete category with products")
+            
+            # Check if category has children
+            if category.children.exists():
+                raise ValidationError("Cannot delete category with subcategories")
+            
+            self.category_repo.delete(category_id)
+            logger.info(f"Category deleted: {category.code}")
+            return True
+            
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Category deletion failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error deleting category: {str(e)}", exc_info=True)
+            raise ValidationError(f"Failed to delete category: {str(e)}")
+    
+    def get_all_categories(self):
+        """Get all categories"""
+        return self.category_repo.get_all()
+    
+    def get_category_by_id(self, category_id):
+        """Get category by ID"""
         category = self.category_repo.get_by_id(category_id)
         if not category:
-            raise NotFoundError(f"Category with ID {category_id} not found")
-        
-        return self.product_repo.get_by_category(category_id)
+            raise NotFoundError(f"Category {category_id} not found")
+        return category
