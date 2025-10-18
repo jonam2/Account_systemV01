@@ -1,4 +1,20 @@
-python manage.py createsuperuser #create new user
+This is a link to the contents of the models folder:
 
-eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzYwMzIzNDM4LCJpYXQiOjE3NjAzMDU0MzgsImp0aSI6ImVmNGM2YzBkMWFmZTQyZWFhOTA2ZGY4MjczYTU3MTQ0IiwidXNlcl9pZCI6MX0.eOmbpVy588HRo7pq8PnATiXqh1hq-GZsUf0UBCRf6zg
+https://gist.github.com/jonam2/ceb8adb1edd82b5da987c2a6ea798bf8
+
+This is a link to the contents of the controllers folder :
+
+https://gist.github.com/jonam2/87ed9981d83d54fb9e876aeb40e293f7
+
+This is a link to the contents of the repositories folder :
+
+https://gist.github.com/jonam2/4528b08e3621a63f2bfa31082bdf4654
+
+This is a link to the contents of the serializers folder :
+
+https://gist.github.com/jonam2/6e9daa30c98edbbd048ae4cbde38305a
+
+This is a link to the contents of the services folder :
+
+https://gist.github.com/jonam2/0b0a2522f72489fdf6cca42a062432c9
 
