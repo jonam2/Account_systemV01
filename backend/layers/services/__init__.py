@@ -1,39 +1,26 @@
-"""Services package initialization - Export all services"""
+"""
+Services Package
+Export all services for easy importing
+"""
 
-from .auth_service import AuthService
-from .user_service import UserService
-from .product_service import ProductService, CategoryService
-from .contact_service import ContactService
-from .warehouse_service import (
-    WarehouseService
-)
-from .invoice_service import InvoiceService
-from .order_service import OrderService, OrderItemService
+from layers.services.auth_service import AuthService
+from layers.services.user_service import UserService
+from layers.services.product_service import ProductService, CategoryService
+from layers.services.contact_service import ContactService
+from layers.services.warehouse_service import WarehouseService
+from layers.services.invoice_service import InvoiceService
+from layers.services.order_service import OrderService, OrderItemService
+from layers.services.production_service import ProductionService
 
 __all__ = [
-    # Auth & Users
     'AuthService',
     'UserService',
-    
-    # Products
     'ProductService',
     'CategoryService',
-    
-    # Contacts
     'ContactService',
-    'ContactPersonService',
-    
-    # Warehouses
     'WarehouseService',
-    'StockService',
-    'StockTransferService',
-    'StockAdjustmentService',
-    
-    # Invoices
     'InvoiceService',
-    'InvoicePaymentService',
-    
-    # Orders
     'OrderService',
     'OrderItemService',
+    'ProductionService',
 ]

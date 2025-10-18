@@ -1,13 +1,20 @@
-"""Auth service - Authentication business logic"""
+"""
+Authentication Service - Complete Business Logic Layer
+Handles authentication and authorization operations
+"""
 from django.contrib.auth import authenticate
-from django.contrib.auth.hashers import make_password
+from django.contrib.auth.hashers import check_password
 from rest_framework_simplejwt.tokens import RefreshToken
+import logging
+
 from layers.repositories.user_repository import UserRepository
-from core.exceptions import AuthenticationError, ValidationError
+from core.exceptions import AuthenticationError, ValidationError, NotFoundError
+
+logger = logging.getLogger(__name__)
 
 
 class AuthService:
-    """Handles authentication business logic"""
+    """Service for authentication operations"""
     
     def __init__(self):
         self.user_repo = UserRepository()
@@ -17,40 +24,53 @@ class AuthService:
         Authenticate user and return tokens
         
         Args:
-            username (str): User's username
-            password (str): User's password
+            username (str): Username
+            password (str): Password
             
         Returns:
-            dict: User data and JWT tokens
+            dict: User data and tokens
             
         Raises:
-            AuthenticationError: If credentials are invalid
+            AuthenticationError: If authentication fails
         """
-        # Authenticate user
-        user = authenticate(username=username, password=password)
-        
-        if not user:
-            raise AuthenticationError("Invalid username or password")
-        
-        if not user.is_active:
-            raise AuthenticationError("User account is disabled")
-        
-        # Generate JWT tokens
-        refresh = RefreshToken.for_user(user)
-        
-        return {
-            'user': {
-                'id': user.id,
-                'username': user.username,
-                'email': user.email,
-                'full_name': user.full_name,
-                'role': user.role,
-            },
-            'tokens': {
-                'refresh': str(refresh),
-                'access': str(refresh.access_token),
+        try:
+            # Authenticate user
+            user = authenticate(username=username, password=password)
+            
+            if not user:
+                logger.warning(f"Failed login attempt for username: {username}")
+                raise AuthenticationError("Invalid username or password")
+            
+            if not user.is_active:
+                logger.warning(f"Login attempt for inactive user: {username}")
+                raise AuthenticationError("User account is inactive")
+            
+            # Generate tokens
+            refresh = RefreshToken.for_user(user)
+            
+            logger.info(f"User logged in: {username}")
+            
+            return {
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'first_name': user.first_name,
+                    'last_name': user.last_name,
+                    'role': user.role,
+                    'full_name': user.full_name,
+                },
+                'tokens': {
+                    'refresh': str(refresh),
+                    'access': str(refresh.access_token),
+                }
             }
-        }
+            
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error during login: {str(e)}", exc_info=True)
+            raise AuthenticationError("Login failed. Please try again.")
     
     def logout(self, refresh_token):
         """
@@ -60,37 +80,40 @@ class AuthService:
             refresh_token (str): JWT refresh token
             
         Returns:
-            bool: True if successful
+            bool: Success status
         """
         try:
             token = RefreshToken(refresh_token)
             token.blacklist()
+            
+            logger.info("User logged out successfully")
             return True
-        except Exception:
-            # If blacklist fails, just return False
-            # This could happen if token is already blacklisted or invalid
+            
+        except Exception as e:
+            logger.error(f"Error during logout: {str(e)}", exc_info=True)
+            # Don't raise error on logout failure
             return False
     
     def refresh_token(self, refresh_token):
         """
-        Generate new access token from refresh token
+        Refresh access token
         
         Args:
             refresh_token (str): JWT refresh token
             
         Returns:
             dict: New access token
-            
-        Raises:
-            AuthenticationError: If refresh token is invalid
         """
         try:
             refresh = RefreshToken(refresh_token)
+            
             return {
                 'access': str(refresh.access_token),
             }
+            
         except Exception as e:
-            raise AuthenticationError(f"Invalid refresh token: {str(e)}")
+            logger.error(f"Error refreshing token: {str(e)}", exc_info=True)
+            raise AuthenticationError("Invalid or expired refresh token")
     
     def change_password(self, user_id, old_password, new_password):
         """
@@ -102,29 +125,181 @@ class AuthService:
             new_password (str): New password
             
         Returns:
-            bool: True if successful
-            
-        Raises:
-            ValidationError: If old password is incorrect or validation fails
+            bool: Success status
         """
-        user = self.user_repo.get_by_id(user_id)
+        try:
+            user = self.user_repo.get_by_id(user_id)
+            if not user:
+                raise NotFoundError(f"User {user_id} not found")
+            
+            # Verify old password
+            if not check_password(old_password, user.password):
+                raise ValidationError("Current password is incorrect")
+            
+            # Validate new password
+            if len(new_password) < 8:
+                raise ValidationError("New password must be at least 8 characters long")
+            
+            if old_password == new_password:
+                raise ValidationError("New password must be different from current password")
+            
+            # Update password
+            from django.contrib.auth.hashers import make_password
+            user.password = make_password(new_password)
+            user.save()
+            
+            logger.info(f"Password changed for user: {user.username}")
+            return True
+            
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Password change failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error changing password: {str(e)}", exc_info=True)
+            raise ValidationError("Failed to change password")
+    
+    def reset_password(self, username, new_password):
+        """
+        Reset user password (admin function)
         
-        if not user:
-            raise ValidationError("User not found")
+        Args:
+            username (str): Username
+            new_password (str): New password
+            
+        Returns:
+            bool: Success status
+        """
+        try:
+            user = self.user_repo.find_by_username(username)
+            if not user:
+                raise NotFoundError(f"User {username} not found")
+            
+            # Validate new password
+            if len(new_password) < 8:
+                raise ValidationError("Password must be at least 8 characters long")
+            
+            # Update password
+            from django.contrib.auth.hashers import make_password
+            user.password = make_password(new_password)
+            user.save()
+            
+            logger.info(f"Password reset for user: {username}")
+            return True
+            
+        except (NotFoundError, ValidationError) as e:
+            logger.warning(f"Password reset failed: {str(e)}")
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error resetting password: {str(e)}", exc_info=True)
+            raise ValidationError("Failed to reset password")
+    
+    def verify_token(self, token):
+        """
+        Verify JWT token validity
         
-        # Verify old password
-        if not user.check_password(old_password):
-            raise ValidationError("Current password is incorrect")
+        Args:
+            token (str): JWT access token
+            
+        Returns:
+            dict: Token payload if valid
+        """
+        try:
+            from rest_framework_simplejwt.tokens import AccessToken
+            access_token = AccessToken(token)
+            
+            user_id = access_token['user_id']
+            user = self.user_repo.get_by_id(user_id)
+            
+            if not user or not user.is_active:
+                raise AuthenticationError("Invalid token")
+            
+            return {
+                'valid': True,
+                'user_id': user_id,
+                'username': user.username,
+                'role': user.role,
+            }
+            
+        except Exception as e:
+            logger.warning(f"Token verification failed: {str(e)}")
+            raise AuthenticationError("Invalid or expired token")
+    
+    def check_permission(self, user, required_role):
+        """
+        Check if user has required role
         
-        # Validate new password
-        if len(new_password) < 8:
-            raise ValidationError("New password must be at least 8 characters long")
+        Args:
+            user: User object
+            required_role (str): Required role
+            
+        Returns:
+            bool: True if user has permission
+        """
+        try:
+            # Superuser has all permissions
+            if user.is_superuser:
+                return True
+            
+            # Manager has most permissions
+            if user.role == 'manager':
+                return True
+            
+            # Check specific role
+            return user.role == required_role
+            
+        except Exception as e:
+            logger.error(f"Permission check error: {str(e)}", exc_info=True)
+            return False
+    
+    def get_user_permissions(self, user):
+        """
+        Get user permissions based on role
         
-        if old_password == new_password:
-            raise ValidationError("New password must be different from current password")
+        Args:
+            user: User object
+            
+        Returns:
+            dict: Permissions dictionary
+        """
+        permissions = {
+            'can_manage_users': False,
+            'can_manage_products': False,
+            'can_manage_contacts': False,
+            'can_manage_warehouses': False,
+            'can_approve_invoices': False,
+            'can_manage_orders': False,
+            'can_manage_production': False,
+            'can_view_reports': False,
+        }
         
-        # Set new password
-        user.set_password(new_password)
-        user.save()
+        # Superuser and Manager have all permissions
+        if user.is_superuser or user.role == 'manager':
+            return {key: True for key in permissions.keys()}
         
-        return True
+        # Accountant permissions
+        if user.role == 'accountant':
+            permissions.update({
+                'can_manage_contacts': True,
+                'can_approve_invoices': True,
+                'can_manage_orders': True,
+                'can_view_reports': True,
+            })
+        
+        # Sales permissions
+        elif user.role == 'sales':
+            permissions.update({
+                'can_manage_contacts': True,
+                'can_manage_orders': True,
+                'can_view_reports': True,
+            })
+        
+        # Warehouse Manager permissions
+        elif user.role == 'warehouse_manager':
+            permissions.update({
+                'can_manage_products': True,
+                'can_manage_warehouses': True,
+                'can_manage_production': True,
+                'can_view_reports': True,
+            })
+        
+        return permissions

@@ -50,6 +50,7 @@ class SoftDeleteModel(models.Model):
         self.is_deleted = True
         self.deleted_at = timezone.now()
         self.save(update_fields=['is_deleted', 'deleted_at'])
+#here
 
     def restore(self):
         """Restore a soft deleted record"""
